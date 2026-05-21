@@ -6,6 +6,7 @@
 #include "ast_helpers.h"
 #include "function_info.h"
 #include "value_ref.h"
+#include "external_value.h"
 
 #include <unordered_set>
 
@@ -107,7 +108,7 @@ class CheckerVisitor : public Visitor
   NodeEqualChecker _equalChecker;
 
   void report(const Node *n, int32_t id, ...);
-  void reportImportSlot(int line, int column, const char *name);
+  void report(int line, int col, int width, int32_t id, ...);
 
   void checkKeyNameMismatch(const Expr *key, const Expr *expr);
 
@@ -136,6 +137,8 @@ class CheckerVisitor : public Visitor
   void checkShiftPriority(const BinExpr *expr);
   void checkCompareWithContainer(const BinExpr *expr);
   void checkBoolToStrangePosition(const BinExpr *expr);
+  void checkInvalidTypeString(const BinExpr *expr);
+  void checkInvalidTypeofString(const BinExpr *expr);
   void checkNewSlotNameMatch(const BinExpr *expr);
   void checkPlusString(const BinExpr *expr);
   void checkNewGlobalSlot(const BinExpr *);
@@ -148,10 +151,13 @@ class CheckerVisitor : public Visitor
   void checkTernaryPriority(const TerExpr *expr);
   void checkSameValues(const TerExpr *expr);
   void checkCanBeSimplified(const TerExpr *expr);
+  void checkDuplicateTernaryCondition(const TerExpr *expr);
   void checkExtendToAppend(const CallExpr *callExpr);
   void checkMergeEmptyTable(const CallExpr *callExpr);
   void checkEmptyArrayResize(const CallExpr *callExpr);
   void checkAlreadyRequired(const CallExpr *callExpr);
+  void resolveRequire(const CallExpr *call, const char *moduleName);
+  void noteRequiredModule(const CallExpr *call, const char *moduleName);
   void checkCallNullable(const CallExpr *callExpr);
   void checkPersistCall(const CallExpr *callExpr);
   void checkForbiddenCall(const CallExpr *callExpr);
@@ -194,6 +200,8 @@ class CheckerVisitor : public Visitor
   void checkDuplicateSwitchCases(SwitchStatement *swtch);
   void checkDuplicateIfBranches(IfStatement *ifStmt);
   void checkDuplicateIfConditions(IfStatement *ifStmt);
+  void checkRepeatedNestedIfConditions(IfStatement *ifStmt);
+  void checkSubsumedIfConditions(IfStatement *ifStmt);
   void checkSuspiciousFormatting(const Statement *body, const Statement *stmt);
   void checkSuspiciousFormattingOfStetementSequence(const Statement* prev, const Statement* cur);
 
@@ -223,11 +231,16 @@ class CheckerVisitor : public Visitor
 
   void checkUnterminatedLoop(LoopStatement *loop);
   void checkVariableMismatchForLoop(ForStatement *loop);
+  void checkForLoopDirection(ForStatement *loop);
+  int getForLoopAssignmentDirection(const Expr *rhs, const char *varname);
+  int getForLoopModifierDirection(const Expr *mod, const char *varname);
+  int getNumericExpressionDirection(const Expr *expr);
   void checkEmptyWhileBody(WhileStatement *loop);
   void checkEmptyThenBody(IfStatement *stmt);
   void checkForgottenDo(const Block *block);
   void checkUnreachableCode(const Block *block);
   void checkAssignedTwice(const Block *b);
+  void checkAssignedBack(const Block *b);
 
   void checkFunctionSimilarity(const Block *b);
   void checkFunctionSimilarity(const TableExpr *table);
@@ -240,6 +253,7 @@ class CheckerVisitor : public Visitor
 
   const char *findSlotNameInStack(const Node *);
   void checkFunctionReturns(FunctionExpr *func);
+  void checkFunctionReturnsSameValue(FunctionExpr *func);
 
   void checkAccessNullable(const DestructuringDecl *d);
   void checkAccessNullable(const AccessExpr *acc);
@@ -282,11 +296,13 @@ class CheckerVisitor : public Visitor
 
   std::unordered_set<const char *, StringHasher, StringEqualer> requiredModules;
   std::unordered_set<const char *, StringHasher, StringEqualer> persistedKeys;
+  std::unordered_set<const Expr *> reportedSubsumedIfConditions;
 
   std::unordered_map<const Node *, ValueRef *> astValues;
-  std::vector<ExternalValueExpr *> externalValues;
 
   Arena *arena;
+
+  ExternalValueTable externalValues; // Declared after arena and ctx for correct life time
 
   FunctionInfo *currentInfo;
 
@@ -308,14 +324,14 @@ class CheckerVisitor : public Visitor
   void applyKnownInvocationToScope(const ValueRef *ref);
   void applyUnknownInvocationToScope();
 
-  const ExternalValueExpr *findExternalValue(const Expr *e);
+  const ExternalValue *findExternalValue(const Expr *e);
   const FunctionInfo *findFunctionInfo(const Expr *e, bool &isCtor);
 
   void setValueFlags(const Expr *lvalue, unsigned pf, unsigned nf);
   const ValueRef *findValueForExpr(const Expr *e);
-  const Expr *maybeEval(const Expr *e, int32_t &evalId, std::unordered_set<const Expr *> &visited, bool allow_external = false);
-  const Expr *maybeEval(const Expr *e, int32_t &evalId, bool allow_external = false);
-  const Expr *maybeEval(const Expr *e, bool allow_external = false);
+  const Expr *maybeEval(const Expr *e, int32_t &evalId, std::unordered_set<const Expr *> &visited);
+  const Expr *maybeEval(const Expr *e, int32_t &evalId);
+  const Expr *maybeEval(const Expr *e);
 
   const char *findFieldName(const Expr *e);
 
@@ -323,6 +339,13 @@ class CheckerVisitor : public Visitor
   bool isPotentiallyNullable(const Expr *e);
   bool isPotentiallyNullable(const Expr *e, std::unordered_set<const Expr *> &visited);
   bool couldBeString(const Expr *e);
+  bool isTypeFunctionResult(const Expr *e);
+  bool isTypeofResult(const Expr *e);
+  const LiteralExpr *findStringLiteral(const Expr *e);
+  void checkRuntimeTypeLiteral(const LiteralExpr *lit);
+  void checkRuntimeTypeLiteralContainer(const Expr *e);
+  void checkRuntimeTypeofLiteral(const LiteralExpr *lit);
+  void checkRuntimeTypeofLiteralContainer(const Expr *e);
 
   void visitBinaryBranches(Expr *lhs, Expr *rhs, bool inv);
   void speculateIfConditionHeuristics(const Expr *cond, VarScope *thenScope, VarScope *elseScope, bool inv = false);
@@ -346,6 +369,7 @@ public:
   CheckerVisitor(SQCompilationContext &ctx)
     : _ctx(ctx)
     , arena(ctx.arena())
+    , externalValues(ctx.arena())
     , currentInfo(nullptr)
     , currentScope(nullptr)
     , breakScope(nullptr)
@@ -397,7 +421,26 @@ public:
 
   void visitImportStatement(ImportStmt *import);
 
-  ValueRef* addExternalValue(const SQObject &val, const Node *location);
+  // Declare a host-provided binding into the current scope. Creates an
+  // SK_IMPORT SymbolInfo with the name, attaches a fresh ExternalValue, and
+  // returns the ValueRef. Only used by analyze() when ingesting `bindings`.
+  ValueRef *declareHostBinding(const char *name, const SQObject &val, const Node *location);
+
+  // Make an ExternalValue-only ValueRef for stashing into astValues so that
+  // callers of findValueForExpr can see the value of a node without a real
+  // declaration (synthetic require()/require_optional() result, GetField on
+  // an external). The returned ValueRef has info == nullptr; see ValueRef::info docs.
+  ValueRef *makeExternalValueRef(const SQObject &val, const Node *location);
+
+  // Attach an ExternalValue (and mark VRS_INITIALIZED) to an existing ValueRef
+  // - for destructuring slots that already have a SymbolInfo from visitVarDecl,
+  // or any other site that already created a ValueRef and just needs the value.
+  // The Node* form derives line/col/width from the node; the explicit-coord
+  // form is for sites that have parser coordinates but no AST node (e.g. an
+  // import-slot symbol that points at the `from X import name` line).
+  void attachExternalValue(ValueRef *v, const SQObject &val, const Node *location);
+  void attachExternalValue(ValueRef *v, const SQObject &val, int line, int col, int width);
+
   void checkDestructuredVarDefault(VarDecl *var);
 
   void analyze(RootBlock *root, const HSQOBJECT *bindings);

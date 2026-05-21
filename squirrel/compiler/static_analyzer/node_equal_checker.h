@@ -31,8 +31,12 @@ class NodeEqualChecker
 
     switch (l->kind())
     {
+    case LK_NULL: return true;
+    case LK_BOOL: return l->b() == r->b();
+    case LK_INT: return l->i() == r->i();
+    case LK_FLOAT: return l->f() == r->f();
     case LK_STRING: return strcmp(l->s(), r->s()) == 0;
-    default: return l->raw() == r->raw();
+    default: assert(0); return false;
     }
   }
 
@@ -387,6 +391,7 @@ public:
     case TO_STATIC_MEMO:
     case TO_INLINE_CONST:
     case TO_RESUME:
+    case TO_AWAIT:
     case TO_CLONE:
     case TO_PAREN:
     case TO_DELETE:

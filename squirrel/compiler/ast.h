@@ -69,6 +69,7 @@
     DEF_TREE_OP(STATIC_MEMO), \
     DEF_TREE_OP(INLINE_CONST), \
     DEF_TREE_OP(RESUME), \
+    DEF_TREE_OP(AWAIT), \
     DEF_TREE_OP(CLONE), \
     DEF_TREE_OP(PAREN), \
     DEF_TREE_OP(CODE_BLOCK_EXPR), \
@@ -87,7 +88,6 @@
     DEF_TREE_OP(SETSLOT), \
     DEF_TREE_OP(CALL), \
     DEF_TREE_OP(TERNARY), \
-    DEF_TREE_OP(EXTERNAL_VALUE), \
     \
     DEF_TREE_OP(EXPR_MARK), \
     \
@@ -160,6 +160,7 @@ public:
     SourceSpan sourceSpan() const { return _span; }
 
     // Only for incrementally-built nodes
+    void setSpanStart(SourceLoc start) { _span.start = start; }
     void setSpanEnd(SourceLoc end) { _span.end = end; }
 
     // Convenience accessors
@@ -190,7 +191,6 @@ class AccessExpr;
 class LiteralExpr;
 class BinExpr;
 class CallExpr;
-class ExternalValueExpr;
 class TableExpr;
 class ClassExpr;
 class FunctionExpr;
@@ -212,7 +212,6 @@ public:
     LiteralExpr *asLiteral() const { assert(op() == TO_LITERAL); return (LiteralExpr *)this; }
     BinExpr *asBinExpr() const { assert(TO_NULLC <= op() && op() <= TO_MODEQ); return (BinExpr *)this; }
     CallExpr *asCallExpr() const { assert(op() == TO_CALL); return (CallExpr *)this; }
-    ExternalValueExpr *asExternal() const { assert(op() == TO_EXTERNAL_VALUE); return (ExternalValueExpr *)this; }
     TableExpr *asTableExpr() const { assert(op() == TO_TABLE || op() == TO_CLASS); return (TableExpr *)this; }
     ClassExpr *asClassExpr() const { assert(op() == TO_CLASS); return (ClassExpr *)this; }
     FunctionExpr *asFunctionExpr() const { assert(op() == TO_FUNCTION); return (FunctionExpr *)this; }
@@ -407,10 +406,10 @@ enum LiteralKind {
 class LiteralExpr : public Expr {
 public:
     LiteralExpr(SourceSpan span) : Expr(TO_LITERAL, span), _kind(LK_NULL) { _v.raw = 0; }
-    LiteralExpr(SourceSpan span, const char *s) : Expr(TO_LITERAL, span), _kind(LK_STRING) { _v.s = s; }
-    LiteralExpr(SourceSpan span, SQFloat f) : Expr(TO_LITERAL, span), _kind(LK_FLOAT) { _v.f = f; }
-    LiteralExpr(SourceSpan span, SQInteger i) : Expr(TO_LITERAL, span), _kind(LK_INT) { _v.i = i; }
-    LiteralExpr(SourceSpan span, bool b) : Expr(TO_LITERAL, span), _kind(LK_BOOL) { _v.b = b; }
+    LiteralExpr(SourceSpan span, const char *s) : Expr(TO_LITERAL, span), _kind(LK_STRING) { _v.raw = 0; _v.s = s; }
+    LiteralExpr(SourceSpan span, SQFloat f) : Expr(TO_LITERAL, span), _kind(LK_FLOAT) { _v.raw = 0; _v.f = f; }
+    LiteralExpr(SourceSpan span, SQInteger i) : Expr(TO_LITERAL, span), _kind(LK_INT) { _v.raw = 0; _v.i = i; }
+    LiteralExpr(SourceSpan span, bool b) : Expr(TO_LITERAL, span), _kind(LK_BOOL) { _v.raw = 0; _v.b = b; }
 
     void visitChildren(Visitor *visitor) {}
     void transformChildren(Transformer *transformer) {}
@@ -434,22 +433,6 @@ private:
         SQUnsignedInteger raw;
     } _v;
 
-};
-
-// Used in the analyzer for external bindings
-class ExternalValueExpr : public Expr {
-public:
-    ExternalValueExpr(const SQObject &from) : Expr(TO_EXTERNAL_VALUE, SourceSpan::invalid()), _value(from) {}
-    ExternalValueExpr(const SQObject &from, SourceSpan span) : Expr(TO_EXTERNAL_VALUE, span), _value(from) {}
-
-    void visitChildren(Visitor *visitor) {}
-    void transformChildren(Transformer *transformer) {}
-
-    SQObjectPtr& value() { return _value; }
-    const SQObjectPtr& value() const { return _value; }
-
-private:
-    SQObjectPtr _value; // To release this, ~ExternalValueExpr() dtor is called explicitly
 };
 
 enum IncForm {
@@ -736,16 +719,16 @@ protected:
     // Incremental building - call setSpanEnd() after body is set
     FunctionExpr(enum TreeOp op, Arena *arena, SourceLoc start, const char *name, Id *nameId = nullptr)
         : Expr(op, {start, SourceLoc::invalid()}), _arena(arena), _parameters(arena), _name(name), _nameId(nameId),
-        _vararg(false), _body(NULL), _lambda(false), _pure(false), _nodiscard(false), _sourcename(NULL), _hoistingLevel(0), _resultTypeMask(~0u) {}
+        _vararg(false), _body(NULL), _lambda(false), _pure(false), _nodiscard(false), _async(false), _sourcename(NULL), _hoistingLevel(0), _resultTypeMask(~0u) {}
 
 public:
     FunctionExpr(Arena *arena, SourceLoc start, Id *nameId)
         : Expr(TO_FUNCTION, {start, SourceLoc::invalid()}), _arena(arena), _parameters(arena), _name(nameId->name()), _nameId(nameId),
-        _vararg(false), _body(NULL), _lambda(false), _pure(false), _nodiscard(false), _sourcename(NULL), _hoistingLevel(0), _resultTypeMask(~0u) {}
+        _vararg(false), _body(NULL), _lambda(false), _pure(false), _nodiscard(false), _async(false), _sourcename(NULL), _hoistingLevel(0), _resultTypeMask(~0u) {}
 
     FunctionExpr(Arena *arena, SourceLoc start, const char *name)
         : Expr(TO_FUNCTION, {start, SourceLoc::invalid()}), _arena(arena), _parameters(arena), _name(name), _nameId(nullptr),
-        _vararg(false), _body(NULL), _lambda(false), _pure(false), _nodiscard(false), _sourcename(NULL), _hoistingLevel(0), _resultTypeMask(~0u) {}
+        _vararg(false), _body(NULL), _lambda(false), _pure(false), _nodiscard(false), _async(false), _sourcename(NULL), _hoistingLevel(0), _resultTypeMask(~0u) {}
 
     void addParameter(SourceSpan nameSpan, const char *name, Expr *defaultVal = NULL) {
         _parameters.push_back(new (_arena) ParamDecl(nameSpan, name, defaultVal));
@@ -778,6 +761,9 @@ public:
     void setNodiscard(bool v) { _nodiscard = v; }
     bool isNodiscard() const { return _nodiscard; }
 
+    void setAsync(bool v) { _async = v; }
+    bool isAsync() const { return _async; }
+
     int hoistingLevel() const { return _hoistingLevel; }
     void hoistBy(int level) { _hoistingLevel += level; }
 
@@ -796,6 +782,7 @@ private:
     bool _lambda;
     bool _pure;
     bool _nodiscard;
+    bool _async;
 
     const char *_sourcename;
     int _hoistingLevel;
@@ -1215,7 +1202,6 @@ public:
     virtual void visitClassExpr(ClassExpr *cls) { visitTableExpr(cls); }
     virtual void visitFunctionExpr(FunctionExpr *f) { visitExpr(f); }
     virtual void visitCommaExpr(CommaExpr *expr) { visitExpr(expr); }
-    virtual void visitExternalValueExpr(ExternalValueExpr *expr) { visitExpr(expr); }
 
     virtual void visitStmt(Statement *stmt) { visitNode(stmt); }
     virtual void visitBlock(Block *block) { visitStmt(block); }
@@ -1277,7 +1263,6 @@ public:
   virtual Node *transformClassExpr(ClassExpr *cls) { return transformTableExpr(cls); }
   virtual Node *transformFunctionExpr(FunctionExpr *f) { return transformExpr(f); }
   virtual Node *transformCommaExpr(CommaExpr *expr) { return transformExpr(expr); }
-  virtual Node *transformExternalValueExpr(ExternalValueExpr *expr) { return transformExpr(expr); }
 
   virtual Node *transformStmt(Statement *stmt) { return transformNode(stmt); }
   virtual Node *transformBlock(Block *block) { return transformStmt(block); }
@@ -1367,6 +1352,7 @@ void Node::visit(V *visitor) {
     case TO_NEG:
     case TO_TYPEOF:
     case TO_RESUME:
+    case TO_AWAIT:
     case TO_CLONE:
     case TO_PAREN:
     case TO_DELETE:
@@ -1403,8 +1389,6 @@ void Node::visit(V *visitor) {
         visitor->visitCallExpr(static_cast<CallExpr *>(this)); return;
     case TO_TERNARY:
         visitor->visitTerExpr(static_cast<TerExpr *>(this)); return;
-    case TO_EXTERNAL_VALUE:
-        visitor->visitExternalValueExpr(static_cast<ExternalValueExpr *>(this)); return;
         //case TO_EXPR_MARK:
     case TO_VAR:
         visitor->visitVarDecl(static_cast<VarDecl *>(this)); return;
@@ -1485,6 +1469,7 @@ Node *Node::transform(T *transformer) {
   case TO_NEG:
   case TO_TYPEOF:
   case TO_RESUME:
+  case TO_AWAIT:
   case TO_CLONE:
   case TO_PAREN:
   case TO_DELETE:
@@ -1521,8 +1506,6 @@ Node *Node::transform(T *transformer) {
     return transformer->transformCallExpr(static_cast<CallExpr *>(this));
   case TO_TERNARY:
     return transformer->transformTerExpr(static_cast<TerExpr *>(this));
-  case TO_EXTERNAL_VALUE:
-    return transformer->transformExternalValueExpr(static_cast<ExternalValueExpr *>(this));
     //case TO_EXPR_MARK:
   case TO_VAR:
     return transformer->transformVarDecl(static_cast<VarDecl *>(this));

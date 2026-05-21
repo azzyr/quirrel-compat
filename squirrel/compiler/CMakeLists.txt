@@ -4,7 +4,6 @@ set(COMPILER_SRC
     parser.cpp
     codegen.cpp
     constgen.cpp
-    sqio.cpp
     compiler.cpp
     sqfuncstate.cpp
     sqdump.cpp
@@ -22,6 +21,7 @@ set(COMPILER_SRC
     static_analyzer/naming.cpp
     static_analyzer/value_ref.cpp
     static_analyzer/var_scope.cpp
+    static_analyzer/external_value.cpp
 )
 
 add_library(quirrel-compiler STATIC ${COMPILER_SRC})
