@@ -354,6 +354,7 @@ static SQInteger base_classof(HSQUIRRELVM v)
     return 0;
 }
 
+
 static const SQRegFunctionFromStr base_funcs[] = {
     { base_getroottable, "getroottable(): table" },
     { base_getconsttable, "getconsttable(): table" },
@@ -848,10 +849,10 @@ static SQInteger swap(HSQUIRRELVM v)
             if (!sq_isnumeric(key1) || !sq_isnumeric(key2))
                 return sq_throwerror(v,"invalid index type for an array");
 
-            const int asize = arr->Size();
-            int k1 = tointeger(key1);
+            const SQInteger asize = arr->Size();
+            SQInteger k1 = tointeger(key1);
             k1 = k1 >= 0 ? k1 : asize + k1;
-            int k2 = tointeger(key2);
+            SQInteger k2 = tointeger(key2);
             k2 = k2 >= 0 ? k2 : asize + k2 ;
             if( k1 >= asize || k2 >= asize || k1 < 0 || k2 < 0)
                 return sq_throwerror(v,"index is out of range");

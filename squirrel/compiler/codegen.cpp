@@ -642,35 +642,82 @@ void CodeGenVisitor::visitSwitchStatement(SwitchStatement *swtch) {
 
 void CodeGenVisitor::visitTryStatement(TryStatement *tryStmt) {
     addLineNumber(tryStmt);
-    _fs->AddInstruction(_OP_PUSHTRAP, 0, 0);
-    _fs->_traps++;
 
-    if (_fs->_breaktargets.size()) _fs->_breaktargets.top()++;
-    if (_fs->_continuetargets.size()) _fs->_continuetargets.top()++;
+    ArenaVector<CatchClause> &clauses = tryStmt->catches();
+    const SQInteger n = (SQInteger)clauses.size();
 
-    SQInteger trappos = _fs->GetCurrentPos();
+    if (_fs->_traps + n > 255)
+        _ctx.throwError(tryStmt, "too many active catch clauses: bytecode supports at most 255 simultaneously active traps per function");
+
+    for (SQInteger i = 0; i < n; ++i) {
+        if (!clauses[i].type) continue;
+        visitForValue(clauses[i].type);
+        _fs->AddInstruction(_OP_CHECK_TYPE, _fs->TopTarget(), _RT_CLASS);
+        _fs->PopTarget();
+    }
+
+    ArenaVector<SQInteger> trappos(_arena);
+    for (SQInteger i = 0; i < n; ++i) trappos.push_back(0);
+
+    // One trap per clause, pushed in reverse declaration order so clause 0 ends up on
+    // top of the VM trap stack and the unwinder matches it first. _OP_PUSHTRAP arg2 is
+    // the class slot, arg3 the has-type flag; the VM copies the class into the trap.
+    for (SQInteger i = n - 1; i >= 0; --i) {
+        CatchClause &c = clauses[i];
+        SQInteger classSlot = 0, hasType = 0;
+        if (c.type) {
+            visitForValue(c.type);
+            classSlot = _fs->TopTarget();
+            hasType = 1;
+        }
+        _fs->AddInstruction(_OP_PUSHTRAP, 0, 0, classSlot, hasType);
+        trappos[i] = _fs->GetCurrentPos();
+        if (c.type) _fs->PopTarget();
+        _fs->_traps++;
+    }
+
+    if (_fs->_breaktargets.size()) _fs->_breaktargets.top() += n;
+    if (_fs->_continuetargets.size()) _fs->_continuetargets.top() += n;
+
     {
         BEGIN_SCOPE();
         tryStmt->tryStatement()->visit(this);
         END_SCOPE();
     }
 
-    _fs->_traps--;
-    _fs->AddInstruction(_OP_POPTRAP, 1, 0);
-    if (_fs->_breaktargets.size()) _fs->_breaktargets.top()--;
-    if (_fs->_continuetargets.size()) _fs->_continuetargets.top()--;
+    _fs->_traps -= n;
+    _fs->AddInstruction(_OP_POPTRAP, n, 0);
+    if (_fs->_breaktargets.size()) _fs->_breaktargets.top() -= n;
+    if (_fs->_continuetargets.size()) _fs->_continuetargets.top() -= n;
     _fs->AddInstruction(_OP_JMP, 0, 0);
     SQInteger jmppos = _fs->GetCurrentPos();
-    _fs->SetInstructionParam(trappos, 1, (_fs->GetCurrentPos() - trappos));
 
-    {
+    ArenaVector<SQInteger> bodyJmp(_arena);
+    for (SQInteger i = 0; i < n; ++i) {
+        CatchClause &c = clauses[i];
+        _fs->SetInstructionParam(trappos[i], 1, (_fs->GetCurrentPos() - trappos[i]));
+
         BEGIN_SCOPE();
-        SQInteger ex_target = _fs->PushLocalVariable(_fs->CreateString(tryStmt->exceptionId()->name()), SQCompiletimeVarInfo{});
-        _fs->SetInstructionParam(trappos, 0, ex_target);
-        tryStmt->catchStatement()->visit(this);
-        _fs->SetInstructionParams(jmppos, 0, (_fs->GetCurrentPos() - jmppos), 0);
+        SQInteger ex_target = _fs->PushLocalVariable(_fs->CreateString(c.exception->name()), SQCompiletimeVarInfo{});
+        _fs->SetInstructionParam(trappos[i], 0, ex_target);
+        // The unwinder pops the clauses above-and-including this one; the later clauses
+        // are still armed below it, so drop them before the body runs (a throw inside the
+        // body must reach the outer try, not a sibling clause).
+        if (n - 1 - i > 0)
+            _fs->AddInstruction(_OP_POPTRAP, n - 1 - i, 0);
+        c.body->visit(this);
         END_SCOPE();
+
+        if (i < n - 1) {                              // last body falls through to the end
+            _fs->AddInstruction(_OP_JMP, 0, 0);
+            bodyJmp.push_back(_fs->GetCurrentPos());
+        }
     }
+
+    SQInteger endpos = _fs->GetCurrentPos();
+    _fs->SetInstructionParams(jmppos, 0, (endpos - jmppos), 0);
+    for (SQInteger i = 0; i < (SQInteger)bodyJmp.size(); ++i)
+        _fs->SetInstructionParams(bodyJmp[i], 0, (endpos - bodyJmp[i]), 0);
 }
 
 void CodeGenVisitor::visitBreakStatement(BreakStatement *breakStmt) {
@@ -1485,7 +1532,7 @@ SQObjectPtr CodeGenVisitor::compileFunc(FunctionExpr *funcDecl, bool is_const, s
     _childFs->_nodiscard = funcDecl->isNodiscard();
     // async functions are compiled as generators; forcing _bgenerator means
     // even an awaitless body still goes through StartCall's generator path,
-    // and the runtime wraps it in a Promise via sqasync::wrap_generator.
+    // and the runtime wraps it in a Future via sqasync::wrap_generator.
     if (funcDecl->isAsync()) {
         _childFs->_isAsync = true;
         _childFs->_bgenerator = true;
@@ -1858,7 +1905,7 @@ void CodeGenVisitor::emitUnaryOp(SQOpcode op, UnExpr *u) {
 
 
 // `await expr` codegen. Emits OP_YIELD with the awaitable in a fresh result
-// slot; the runner settles the awaited Promise and swaps the resolved value
+// slot; the runner settles the awaited Future and swaps the resolved value
 // into that slot (or routes rejection via the throw-resume path). The slot
 // must not alias a named local, since the swap would otherwise overwrite it.
 void CodeGenVisitor::emitAwait(UnExpr *u) {
@@ -1867,10 +1914,10 @@ void CodeGenVisitor::emitAwait(UnExpr *u) {
 
     Expr *arg = u->argument();
     // Flag a known-sync call as a dead `await`. Native closures opt out: from
-    // script we can't tell whether they return a Promise (httpFetch, async.delay,
+    // script we can't tell whether they return a Future (httpFetch, async.delay,
     // async.nextFrame) or a plain value. Sync helpers annotated as returning an
     // instance opt out too - chain-unwrap makes `await wrap()` do real work
-    // when wrap returns a Promise. Class constructors don't opt out (their
+    // when wrap returns a Future. Class constructors don't opt out (their
     // result is never awaitable). deparen so `await (f())` matches.
     Expr *probe = deparen(arg);
     if (probe->op() == TO_CALL) {
@@ -2017,7 +2064,6 @@ void CodeGenVisitor::emitShortCircuitLogicalOp(SQOpcode op, Expr *lhs, Expr *rhs
     SQInteger trg = _fs->PushTarget();
     _fs->AddInstruction(op, trg, 0, first_exp, 0);
     SQInteger jpos = _fs->GetCurrentPos();
-    if (trg != first_exp) _fs->AddInstruction(_OP_MOVE, trg, first_exp);
     visitForValue(rhs);
     _fs->SnoozeOpt();
     SQInteger second_exp = _fs->PopTarget();

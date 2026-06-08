@@ -1,0 +1,10 @@
+script done
+body done
+
+AN ERROR HAS OCCURRED [oops]
+
+ERROR TRACE
+    at failing (testData/exec/async/unhandled_error.nut:8)
+      this = null
+    task root: failing (testData/exec/async/unhandled_error.nut:7)
+    launched at testData/exec/async/unhandled_error.nut:13 main

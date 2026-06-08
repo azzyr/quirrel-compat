@@ -1251,13 +1251,10 @@ void SQParser::ParseTableOrClass(TableExpr *decl, SQInteger separator, SQInteger
             }
         }
         if (_token == TK_ASYNC) {
-            if (otype != NEWOBJ_CLASS) {
-                throwError("'async' is only allowed on class methods, not table members");
-            }
             asyncKeywordStart = _lex.tokenStart();
             Lex();
             if (_token == TK_CONSTRUCTOR) {
-                throwError("'async constructor' is not allowed: a constructor must return the new instance, not a Promise");
+                throwError("'async constructor' is not allowed: a constructor must return the new instance, not a Future");
             }
             else if (_token != TK_FUNCTION) {
                 throwError("expected function");
@@ -1987,16 +1984,42 @@ TryStatement* SQParser::parseTryCatchStatement()
     checkBraceIndentationStyle();
     Statement *t = parseStatement();
 
-    Expect(TK_CATCH);
+    TryStatement *tryStmt = newNode<TryStatement>(start, arena(), t);
 
-    Expect('(');
-    Id *exid = (Id *)Expect(TK_IDENTIFIER);
-    Expect(')');
+    bool sawCatchAll = false;
+    do {
+        Expect(TK_CATCH);
+        if (sawCatchAll)
+            throwError("a catch-all clause '(e)' must be the last catch");
 
-    checkBraceIndentationStyle();
-    Statement *cth = parseStatement();
+        Expect('(');
+        // catch (Type var) when a second identifier follows; catch (var) is the catch-all.
+        Id *first = (Id *)Expect(TK_IDENTIFIER);
+        Id *type = nullptr;
+        Id *exid = nullptr;
+        if (_token == TK_IDENTIFIER) {
+            type = first;
+            exid = (Id *)Expect(TK_IDENTIFIER);
+        }
+        else {
+            exid = first;
+            sawCatchAll = true;
+        }
+        Expect(')');
 
-    return newNode<TryStatement>(start, t, exid, cth);
+        if (type) {
+            for (auto &c : tryStmt->catches())
+                if (c.type && strcmp(c.type->name(), type->name()) == 0)
+                    throwError("duplicate catch type '%s'", type->name());
+        }
+
+        checkBraceIndentationStyle();
+        Statement *body = parseStatement();
+        tryStmt->addCatch(type, exid, body);
+    } while (_token == TK_CATCH);
+
+    tryStmt->finalize(_lex.currentPos());
+    return tryStmt;
 }
 
 

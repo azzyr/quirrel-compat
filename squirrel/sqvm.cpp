@@ -171,6 +171,7 @@ void SQVM::Finalize()
     if(_openouters) CloseOuters(&_stack._vals[0]);
     _roottable.Null();
     _lasterror.Null();
+    _pendingValueFaultTrace.Null();
     _errorhandler.Null();
     _debughook = false;
     _debughook_native = NULL;
@@ -602,10 +603,10 @@ bool SQVM::StartCall(SQClosure *closure,SQInteger target,SQInteger args,SQIntege
         if (f->_isAsync) {
             // Use a local SQObjectPtr: wrap_generator pushes onto the VM stack,
             // which can reallocate _stack._vals and invalidate a slot reference.
-            SQObjectPtr taskPromise;
-            if (SQ_FAILED(sqasync::wrap_generator(this, gen, taskPromise)))
+            SQObjectPtr taskFuture;
+            if (SQ_FAILED(sqasync::wrap_generator(this, gen, taskFuture)))
                 return false;
-            _stack._vals[_stackbase + target] = taskPromise;
+            _stack._vals[_stackbase + target] = taskFuture;
         } else {
             _stack._vals[_stackbase + target] = genPtr;
         }
@@ -695,8 +696,8 @@ bool SQVM::DerefInc(SQInteger op,SQObjectPtr &target, SQObjectPtr &self, SQObjec
     } else if (sq_type(tself) == OT_ARRAY){
         if (sq_isnumeric(key)) {
            SQArray * __restrict array = _array(tself);
-           uint32_t nidx  = tointeger(tkey);
-           if (nidx < (SQInteger)array->_values.size())
+           SQUnsignedInteger nidx  = tointeger(tkey);
+           if (nidx < array->_values.size())
               instanceValue = &array->_values[nidx];
         }
     }
@@ -918,6 +919,13 @@ bool SQVM::IsInstanceOf(const SQObject &obj, const SQClass *cls)
         return false;
 }
 
+bool SQVM::trapMatches(const SQExceptionTrap &et, const SQObjectPtr &err)
+{
+    if (sq_type(et._exclass) == OT_NULL)
+        return true;
+    return IsInstanceOf(err, _class(et._exclass));
+}
+
 #if defined(SQ_USED_MEM_COUNTER_DECL)
   SQ_USED_MEM_COUNTER_DECL
 #endif
@@ -970,7 +978,7 @@ bool SQVM::Execute(const SQObjectPtr &closure, SQInteger nargs, SQInteger stackb
             temp_reg = closure;
             if(!StartCall<debughookPresent>(_closure(temp_reg), _top - nargs, nargs, stackbase, false)) {
                 //call the handler if there are no calls in the stack, if not relies on the previous node
-                if(ci == NULL) CallErrorHandler(_lasterror);
+                if(ci == NULL) CallErrorHandler(_lasterror, SQObjectPtr());
                 return false;
             }
             if(_callsstacksize == prevci_idx) {
@@ -981,20 +989,16 @@ bool SQVM::Execute(const SQObjectPtr &closure, SQInteger nargs, SQInteger stackb
                       }
             break;
         case ET_RESUME_GENERATOR:
-            if(!_generator(closure)->Resume(this, outres)) {
-                return false;
-            }
-            ci->_root = SQTrue;
-            traps += ci->_etraps;
-            break;
         case ET_RESUME_GENERATOR_THROW:
-            // Caller pre-loaded `_lasterror` with the value to raise; mirrors ET_RESUME_THROW_VM.
+            // The _THROW variant raises the caller's pre-loaded `_lasterror` at
+            // the resumed await point, mirroring ET_RESUME_THROW_VM below.
             if(!_generator(closure)->Resume(this, outres)) {
                 return false;
             }
             ci->_root = SQTrue;
             traps += ci->_etraps;
-            goto exception_trap;
+            if(et == ET_RESUME_GENERATOR_THROW) { goto exception_trap; }
+            break;
         case ET_RESUME_VM:
         case ET_RESUME_THROW_VM:
             traps = _suspended_traps;
@@ -1037,6 +1041,10 @@ exception_restore:
             {
             case _OP_DATA_NOP: continue;
             case _OP_LOAD: TARGET = ci->_literals[arg1]; continue;
+            case _OP_LOAD_MOVE:
+                TARGET = ci->_literals[arg1];
+                STK(arg2) = STK(arg3);
+                continue;
             case _OP_LOADINT:
 #ifndef _SQ64
                 TARGET = (SQInteger)arg1; continue;
@@ -1711,7 +1719,16 @@ exception_restore:
             case _OP_CLONE: _GUARD(Clone(STK(arg1), TARGET)); continue;
             case _OP_TYPEOF: _GUARD(TypeOf(STK(arg1), TARGET)) continue;
             case _OP_PUSHTRAP:{
-                _etraps.push_back(SQExceptionTrap(_top,_stackbase, _ip+arg1, arg0)); traps++;
+                SQObjectPtr exclass; // OT_NULL stays a catch-all
+                if (arg3) {
+                    SQObjectPtr &c = STK(arg2);
+                    if (sq_type(c) != OT_CLASS) {
+                        Raise_Error("catch type must be a class, got %s", GetTypeName(c));
+                        SQ_THROW();
+                    }
+                    exclass = c;
+                }
+                _etraps.push_back(SQExceptionTrap(_top,_stackbase, _ip+arg1, arg0, exclass)); traps++;
                 ci->_etraps++;
                               }
                 continue;
@@ -1818,21 +1835,75 @@ exception_trap:
 //      dumpstack(_stackbase);
         SQInteger last_top = _top;
 
-        if ((_ss(this)->_notifyallexceptions || (!traps && invoke_err_handler)) && !sq_isnull(currerror))
-            CallErrorHandler(currerror);
+        // Snapshot the origin before the unwind for sqasync's fault carrier, when
+        // an async step is on the stack: the ci chain is still live here, the unwind
+        // below destroys the inner frames, and the thrown value carries no trace of
+        // its own. A non-null trace was inherited from an awaited future (re-injected
+        // throw); keep it.
+        if (sq_isnull(_pendingValueFaultTrace)) {
+            bool isNull = sq_isnull(currerror);
+            bool rootAsync = false;
+            for (CallInfo *p = ci; p && p >= _callsstack; --p) {
+                if (!p->_root)
+                    continue;
+                if (sq_type(p->_closure) == OT_CLOSURE && _closure(p->_closure)->_function->_isAsync) {
+                    rootAsync = true;
+                    break;
+                }
+                // A `throw null` whose nearest root is a non-async callback is a
+                // synchronous _get/_set/map/filter skip sentinel, not a fault.
+                if (isNull)
+                    break;
+            }
+            if (rootAsync)
+                _pendingValueFaultTrace = sq_capture_error_trace(this);
+        }
+
+        // Typed catches mean an active trap may not catch this value, so !traps is no
+        // longer a sound "will be caught" test. Pre-scan this invocation's traps (the
+        // topmost `traps` entries) read-only; only a real miss reaches the handler here,
+        // at the throw site with the live ci chain.
+        bool willBeCaught = false;
+        for (SQInteger i = 0; i < traps; i++) {
+            if (trapMatches(_etraps._vals[_etraps.size() - 1 - i], currerror)) { willBeCaught = true; break; }
+        }
+
+        if ((_ss(this)->_notifyallexceptions || (!willBeCaught && invoke_err_handler)) && !sq_isnull(currerror)) {
+            // The handler re-enters script; a bare throw inside it must snapshot
+            // its own origin, not inherit this fault's pending carrier.
+            SQObjectPtr savedFaultTrace = _pendingValueFaultTrace;
+            _pendingValueFaultTrace.Null();
+            // Keep it GC-reachable across the handler: a C-stack SQObjectPtr is not a root.
+            Push(savedFaultTrace);
+            // The ci chain is still live here, so the handler walks frames directly;
+            // no carrier array is handed over (that is the async-sweep path).
+            CallErrorHandler(currerror, SQObjectPtr());
+            Pop();
+            _pendingValueFaultTrace = savedFaultTrace;
+        }
 
         while( ci ) {
-            if(ci->_etraps > 0) {
+            while(ci->_etraps > 0) {
                 SQExceptionTrap &et = _etraps.top();
+                if (!trapMatches(et, currerror)) {
+                    // Wrong type for this clause: never caught here. Pop and try the next
+                    // clause/trap in this frame; leave _pendingValueFaultTrace intact so a
+                    // value-fault that escapes all clauses keeps its origin.
+                    _etraps.pop_back(); traps--; ci->_etraps--;
+                    continue;
+                }
                 ci->_ip = et._ip;
                 _top = et._stacksize;
                 _stackbase = et._stackbase;
                 _stack._vals[_stackbase + et._extarget] = currerror;
                 _etraps.pop_back(); traps--; ci->_etraps--;
                 while(last_top >= _top) _stack._vals[last_top--].Null();
+                // Caught: drop the value-fault origin so a later rethrow
+                // snapshots its own site.
+                _pendingValueFaultTrace.Null();
                 goto exception_restore;
             }
-            else if (_debughook) {
+            if (_debughook) {
                     //notify debugger of a "return"
                     //even if it really an exception unwinding the stack
                     for(SQInteger i = 0; i < ci->_ncalls; i++) {
@@ -1865,7 +1936,7 @@ bool SQVM::CreateClassInstance(SQClass *theclass, SQObjectPtr &__restrict out_in
     return true;
 }
 
-void SQVM::CallErrorHandler(const SQObjectPtr &error)
+void SQVM::CallErrorHandler(const SQObjectPtr &error, const SQObjectPtr &trace)
 {
   if (ci)
     ci->_ip--;
@@ -1897,12 +1968,25 @@ void SQVM::CallErrorHandler(const SQObjectPtr &error)
     }
   }
 
-    if(sq_type(_errorhandler) != OT_NULL) {
+    if (sq_type(_errorhandler) != OT_NULL) {
+        bool acceptsTrace = false;
+        if (sq_type(_errorhandler) == OT_CLOSURE) {
+            SQFunctionProto *f = _closure(_errorhandler)->_function;
+            acceptsTrace = f->_varparams || f->_nparameters >= 3;
+        }
+        else if (sq_type(_errorhandler) == OT_NATIVECLOSURE) {
+            SQInteger npc = _nativeclosure(_errorhandler)->_nparamscheck;
+            acceptsTrace = npc >= 3 || npc <= -2;
+        }
+        SQInteger nargs = acceptsTrace ? 3 : 2;
+        assert(_top+nargs <= _stack.size());
+        PushNull();
+        Push(error);
+        if (acceptsTrace)
+            Push(trace);
         SQObjectPtr out;
-        assert(_top+2 <= _stack.size());
-        Push(_roottable); Push(error);
-        Call(_errorhandler, 2, _top-2, out,SQFalse);
-        Pop(2);
+        Call(_errorhandler, nargs, _top-nargs, out, SQFalse);
+        Pop(nargs);
     }
 
   if (ci)
@@ -1917,14 +2001,14 @@ void SQVM::CallDebugHook(SQInteger type,SQInteger forcedline)
         if (_debughook_native)
             _debughook_native(this, type, "", -1, "");
         else {
-            SQObjectPtr temp_reg; // -V688
+            SQObjectPtr tmp;
             SQInteger nparams = 5;
-            Push(_roottable);
+            PushNull();
             Push(SQObjectPtr(type));
             Push(SQObjectPtr(SQString::Create(_ss(this), "")));
             Push(SQObjectPtr(SQInteger(-1)));
             Push(SQObjectPtr(SQString::Create(_ss(this), "")));
-            Call(_debughook_closure, nparams, _top - nparams, temp_reg, SQFalse);
+            Call(_debughook_closure, nparams, _top - nparams, tmp, SQFalse);
             Pop(nparams);
         }
         _debughook = true;
@@ -1941,7 +2025,7 @@ void SQVM::CallDebugHook(SQInteger type,SQInteger forcedline)
     else {
         SQObjectPtr temp_reg;
         SQInteger nparams=5;
-        Push(_roottable);
+        PushNull();
         Push(SQObjectPtr(type));
         Push(func->_sourcename);
         Push(SQObjectPtr(forcedline ? forcedline : func->GetLine(ci->_ip)));

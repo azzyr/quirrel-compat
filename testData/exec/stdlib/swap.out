@@ -1,3 +1,6 @@
 2 1
 asd 123
 789 456
+30 20 10
+throws: index is out of range
+1 2 3

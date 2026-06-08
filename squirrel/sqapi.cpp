@@ -1708,6 +1708,11 @@ SQRELEASEHOOK sq_getreleasehook(HSQUIRRELVM v,SQInteger idx)
     }
 }
 
+void sq_set_table_iter_seed(HSQUIRRELVM v, SQUnsignedInteger32 iter_seed)
+{
+    _ss(v)->table_iter_seed = iter_seed;
+}
+
 void sq_setcompilererrorhandler(HSQUIRRELVM v,SQCOMPILERERROR f)
 {
     _ss(v)->_compilererrorhandler = f;
