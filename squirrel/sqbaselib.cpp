@@ -1559,6 +1559,7 @@ const SQRegFunction SQSharedState::_array_default_type_methods_funcz[]={
     {"len",default_type_method_len,1, "a", NULL, true},
     {"append",array_append,-2, "a."},
     {"extend",array_extend,-2, "aa"},
+    {"push",array_append,-2, "a."},
     {"pop",array_pop,1, "a"},
     {"top",array_top,1, "a"},
     {"insert",array_insert,3, "an."},
