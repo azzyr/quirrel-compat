@@ -12,6 +12,7 @@ enum SQOuterType {
 enum SQLangFeature {
     // parsing stage
     LF_FORBID_ROOT_TABLE = 0x000001,
+    LF_FORBID_EXTENDS = 0x000002,
     LF_FORBID_DELETE_OP = 0x000004,
     LF_FORBID_CLONE_OP = 0x000008,
     LF_FORBID_SWITCH_STMT = 0x000010,

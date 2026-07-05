@@ -67,6 +67,7 @@ void SQLexer::Init(const char *sourceText, size_t sourceTextSize)
     ADD_KEYWORD(default, TK_DEFAULT);
     ADD_KEYWORD(this, TK_THIS);
     ADD_KEYWORD(class,TK_CLASS);
+    ADD_KEYWORD(extends,TK_EXTENDS);
     ADD_KEYWORD(constructor,TK_CONSTRUCTOR);
     ADD_KEYWORD(instanceof,TK_INSTANCEOF);
     ADD_KEYWORD(true,TK_TRUE);

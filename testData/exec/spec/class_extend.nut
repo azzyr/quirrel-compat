@@ -1,11 +1,13 @@
 class B {}
 
-class A(B) {}
+class A extends B {}
 
-class D(class {}) {}
+class C (B) { }
 
-class E(class(class {}) {}) {}
+class D (class {}) {}
 
-class F(class(class(class{}) {}) {}) {}
+class E (class extends class {} {}) {}
 
-class G(class { a = 1 }) { a = 2 } { println(1) } { println(2) }
+class F (class extends class (class {}) {} {}) {}
+
+class G extends class { a = 1 } { a = 2 } { println(1) } { println(2) }

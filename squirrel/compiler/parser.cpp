@@ -2096,6 +2096,9 @@ ClassExpr* SQParser::ClassExp(SourceLoc classStart, Expr *key)
     NestingChecker nc(this);
     Expr *baseExpr = NULL;
     if(_token == TK_EXTENDS) {
+        if ( _lang_features & LF_FORBID_EXTENDS ) {
+            throwError( "Old-style class inheritance using 'extends' keyword is forbidden. Use `class D (B) {}` syntax" );
+        }
         Lex();
         baseExpr = Expression(SQE_RVALUE);
     }
