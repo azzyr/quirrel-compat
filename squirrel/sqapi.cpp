@@ -2235,3 +2235,21 @@ void sq_checkglobalnames(HSQUIRRELVM v) {
 void sq_mergeglobalnames(const HSQOBJECT *bindings) {
   StaticAnalyzer::mergeKnownBindings(bindings);
 }
+
+/* quirrel-compat */
+void sq_enable_legacy_module(HSQUIRRELVM v)
+{
+    _ss(v)->EnableLegacyModule();
+}
+
+SQBool sq_is_legacy_module(HSQUIRRELVM v, const char *name)
+{
+    if ( !name || _ss(v)->IsLegacyModuleEnabled() == SQFalse )
+        return false;
+    return strcmp( name, "legacyModule" ) == 0;
+}
+
+SQBool sq_is_legacy_module_enabled(HSQUIRRELVM v)
+{
+    return _ss(v)->IsLegacyModuleEnabled();
+}

@@ -609,4 +609,9 @@ SQUIRREL_API SQRESULT sq_getstackobj(HSQUIRRELVM v,SQInteger idx, SQObjectPtr *p
 SQUIRREL_API SQRESULT sq_obj_get(HSQUIRRELVM v, const HSQOBJECT *obj, const HSQOBJECT *slot,
                                     SQObjectPtr *out, bool raw) = delete;
 
+/* quirrel-compat */
+SQUIRREL_API void sq_enable_legacy_module(HSQUIRRELVM v);
+SQUIRREL_API SQBool sq_is_legacy_module_enabled(HSQUIRRELVM v);
+SQUIRREL_API SQBool sq_is_legacy_module(HSQUIRRELVM v, const char *name);
+
 #endif /*_SQUIRREL_H_*/

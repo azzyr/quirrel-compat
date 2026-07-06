@@ -73,6 +73,7 @@ void PrintUsage()
         "  --parse-types             parse function types from file\n"
         "  --D:<diagnostic-name>     disable diagnostic by text id\n"
         "  -optCH                    enable Closure Hoisting Optimization\n"
+        "  -legacy-module            enable legacy module\n"
         "  -d                        generates debug infos\n"
         "  -v                        displays version\n"
         "  -h                        prints help\n");
@@ -422,6 +423,9 @@ int getargs(HSQUIRRELVM v,int argc, char* argv[],SQInteger *retval)
             }
             else if (strcmp("-optCH", arg) == 0) {
                 sq_setcompilationoption(v, CompilationOptions::CO_CLOSURE_HOISTING_OPT, true);
+            }
+            else if (strcmp("-legacy-module", arg) == 0) {
+                sq_enable_legacy_module(v);
             }
             else if (strcmp("-v", arg) == 0 || strcmp("--version", arg) == 0) {
                 PrintVersionInfos();

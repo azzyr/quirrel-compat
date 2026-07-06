@@ -162,7 +162,11 @@ public:
     SQUnsignedInteger32 table_iter_seed;
     SQUnsignedInteger32 watchdog_last_alive_time_msec;
     SQUnsignedInteger32 watchdog_threshold_msec;
+
+    void EnableLegacyModule();
+    SQBool IsLegacyModuleEnabled();
 private:
+    SQBool _legacyModuleEnabled;
     char *_scratchpad;
     SQInteger _scratchpadsize;
 };

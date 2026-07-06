@@ -123,6 +123,7 @@ void SQSharedState::Init()
 {
     _scratchpad=NULL;
     _scratchpadsize=0;
+    _legacyModuleEnabled=SQFalse;
 #ifndef NO_GARBAGE_COLLECTOR
     _gc_chain=NULL;
 #endif
@@ -271,6 +272,15 @@ SQSharedState::~SQSharedState()
     if(_scratchpad)SQ_FREE(_alloc_ctx,_scratchpad,_scratchpadsize);
 }
 
+void SQSharedState::EnableLegacyModule()
+{
+    _legacyModuleEnabled = SQTrue;
+}
+
+SQBool SQSharedState::IsLegacyModuleEnabled()
+{
+    return _legacyModuleEnabled;
+}
 
 SQInteger SQSharedState::GetMetaMethodIdxByName(const SQObjectPtr &name)
 {
