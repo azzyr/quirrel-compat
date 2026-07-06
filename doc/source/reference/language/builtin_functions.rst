@@ -385,6 +385,17 @@ Tries to invoke the _tostring metamethod. If that fails, it returns "(table : po
 
 Removes all the slots from the table. Returns the table itself.
 
+
+.. sq:function:: table.setdelegate(table)
+
+Sets the delegate of the table. To remove a delegate, 'null' must be passed to the function. The function returns the table itself (e.g. a.setdelegate(b) -- in this case 'a' is the return value).
+
+
+.. sq:function:: table.getdelegate()
+
+returns the table's delegate or null if no delegate was set.
+
+
 .. sq:function:: table.filter(func(val, [key], [table_ref]))
 
 Creates a new table with all values that pass the test implemented by the provided function. In detail, it creates a new table, invokes the specified function for each key-value pair in the original table; if the function returns 'true', then the value is added to the newly created table at the same key.

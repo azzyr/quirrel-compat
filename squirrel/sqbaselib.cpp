@@ -757,6 +757,19 @@ static SQInteger container_rawget(HSQUIRRELVM v)
 }
 
 
+static SQInteger table_setdelegate(HSQUIRRELVM v)
+{
+    if(SQ_FAILED(sq_setdelegate(v,-2)))
+        return SQ_ERROR;
+    sq_push(v,-1); // -1 because sq_setdelegate pops 1
+    return 1;
+}
+
+static SQInteger table_getdelegate(HSQUIRRELVM v)
+{
+    return SQ_SUCCEEDED(sq_getdelegate(v,-1))?1:SQ_ERROR;
+}
+
 static SQInteger table_filter(HSQUIRRELVM v)
 {
     const SQObjectPtr &o = stack_get(v,1);
@@ -1076,6 +1089,8 @@ const SQRegFunction SQSharedState::_table_default_type_methods_funcz[]={
     {"weakref",obj_type_method_weakref,1, NULL },
     {"tostring",default_type_method_tostring,1, "."},
     {"clear",obj_clear,1, "."},
+    {"setdelegate",table_setdelegate,2, ".t|o"},
+    {"getdelegate",table_getdelegate,1, "."},
     {"map",table_map,2, "tc"},
     {"filter",table_filter,2, "tc"},
     {"reduce",table_reduce, -2, "tc"},
